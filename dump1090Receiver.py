@@ -4,28 +4,37 @@ import urllib.request
 import json
 from influxdb import InfluxDBClient
 import datetime
+import argparse
 
 class dump1090Reader:
-    def __init__(self, host):
+    def __init__(self, host, user, password):
         self.host = host
-        self.url = 'http://'+host+'/dump1090/data/stats.json'
-        print(self.url)
+        self.user = user
+        self.password = password
+        self.url = 'http://'+host+'/dump1090/data/'
 
-    def getData(self):
-        req = urllib.request.Request(self.url)
+    def getAircraft(self):
+        req = urllib.request.Request(self.url+'aircraft.json')
         r = urllib.request.urlopen(req).read()
         cont = json.loads(r.decode('utf-8'))
         return cont
 
-    def collectData(self, data):
+    def getStats(self):
+        req = urllib.request.Request(self.url+'stats.json')
+        r = urllib.request.urlopen(req).read()
+        cont = json.loads(r.decode('utf-8'))
+        return cont
+
+    def collectStats(self, data):
         data1min = data['last1min']
         data5min = data['last5min']
         data15min = data['last15min']
-        self.parseData(data1min, "1min")
-        self.parseData(data5min, "5min")
-        self.parseData(data15min, "15min")
+        self.parseStats(data1min, "1min")
+        self.parseStats(data5min, "5min")
+        self.parseStats(data15min, "15min")
 
-    def parseData(self, data, tag):
+
+    def parseStats(self, data, tag):
         cprAirborneMsgs = data['cpr']['airborne']
         positions = data['cpr']['global_ok'] + data['cpr']['local_ok']
         tracksAll = data['tracks']['all']
@@ -58,11 +67,39 @@ class dump1090Reader:
                         "modeSaccepted": modeSaccepted[0]
                         }
                 }]
+        client = InfluxDBClient(host=self.host, port=8086, username=self.user, password=self.password, database='adsb')
+        client.write_points(json_data, database='adsb', protocol='json')
+
+    def parseAircraft(self, data):
+        numAircrafts = len(data['aircraft'])
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat('T')
+        json_data = [{
+                "measurement": "adsbAircrafts",
+                "tags":{
+                    "host": "piflight",
+                    "function": "adsbAircraft",
+                    "datatag": "aircrafts"
+                    },
+                "time": timestamp,
+                "fields":
+                    {
+                        "numAircrafts": numAircrafts
+                        }
+                    }]
         client = InfluxDBClient(host=self.host, port=8086, username='grafana', password='piGrafana', database='adsb')
         client.write_points(json_data, database='adsb', protocol='json')
 
+
 if __name__ == '__main__':
-    host = '192.168.0.47'
-    d1090 = dump1090Reader(host)
-    data = d1090.getData()
-    d1090.collectData(data)
+    parser = argparse.ArgumentParser(description='dump1090 logger')
+    parser.add_argument('host', type=str, help='ip-address of influxdb host')
+    parser.add_argument('user', type=str, help='username for influxdb')
+    parser.add_argument('password', type=str, help='password for influxdb')
+
+    args = parser.parse_args()
+
+    d1090 = dump1090Reader(args.host, args.user, args.password)
+    stats = d1090.getStats()
+    d1090.collectStats(stats)
+    aircrafts = d1090.getAircraft()
+    d1090.parseAircraft(aircrafts)
